@@ -29,6 +29,20 @@ dd_patch() {
 	rm "$tmp"
 }
 
+push_package() {
+	package="$(echo $1 | sed 's/#.*//g' | sed 's/ *//g')"
+	if ! [ -z "$package" ]; then
+		packages="$packages $package"
+	fi
+}
+
+install_packages() {
+	dest_dir="$1"
+	if ! [ -z "$packages" ]; then
+		PKG_DBDIR="$dest_dir/var/db/pkg" pkg_add -I -B "$dest_dir" $packages
+	fi
+}
+
 bin_patch() {
 	line="$(echo "$2" | sed 's/^ *//g')"
 	offset="$(echo "$line" | cut -d " " -f 1)"
@@ -40,7 +54,6 @@ bin_patch() {
 if [ "$(uname)" != "OpenBSD" ]; then
 	warnlog "Not running OpenBSD"
 fi
-
 # Check if user has enough privileges
 if ! [ "$(id -u)" = "0" ]; then
 	errlog "Run as root"
@@ -63,8 +76,8 @@ log "Work directory: $WORK_DIR"
 log "OpenBSD mirror: $OPENBSD_MIRROR"
 log "OpenBSD version: $OPENBSD_VERSION"
 log "OpenBSD architecture: $OPENBSD_ARCH"
-if [ -d "$OUT_DIR" ]; then
-	errlog "An output directory already exists: '$OUT_DIR'. Run 'clean.sh' to delete the previous build, or 'full_clean.sh' to delete the cache as well."
+if [ -d "$WORK_DIR" ]; then
+	errlog "A work directory already exists: '$WORK_DIR'. Run 'clean.sh' to delete the previous build, or 'full_clean.sh' to delete the cache as well."
 	exit 1
 fi
 mkdir -p "$WORK_DIR" "$CACHE_DIR" "$OUT_DIR"
@@ -88,7 +101,8 @@ fi
 # Check if ISO has already been extracted
 iso_files_dir="$WORK_DIR/cd-dir"
 # Mount ISO on temporary directory
-iso_mount="$(mktemp -d)"
+iso_mount="$WORK_DIR/mntiso"
+mkdir -p "$iso_mount"
 vndev="$(vnconfig -l | grep "not in use" | head -1 | cut -d ":" -f 1)"
 if [ -z "$vndev" ]; then
 	errlog "Uname to find available vndev for mounting the ISO"
@@ -104,6 +118,7 @@ log "Mounted the ISO on: $iso_mount"
 log "Copying files from ISO to: $iso_files_dir"
 cp -r "$iso_mount" "$iso_files_dir"
 log "Files copied successfully"
+fileset_dir="$iso_files_dir/$OPENBSD_VERSION/$OPENBSD_ARCH"
 
 # Unmount ISO from temporary directory
 log "Unmounting ISO from vndev: $vndev"
@@ -112,8 +127,52 @@ rm -r "$iso_mount"
 vnconfig -u "$vndev"
 log "Unmouned ISO successfully"
 
+# Extract baseXX.tgz
+baseXX="base${openbsd_shortver}.tgz"
+log "Extracting '${baseXX}'..."
+baseXX_dir="$CACHE_DIR/base"
+if ! [ -d "$baseXX_dir" ]; then
+	mkdir -p "$baseXX_dir"
+	mv "$fileset_dir/$baseXX" "$baseXX_dir"
+	cd "$baseXX_dir"
+	tar -zxf "$baseXX" > /dev/null
+	rm "$baseXX"
+else
+	warnlog "The directory '$baseXX_dir' already exists, skipping..."
+fi
+
+
+# Extract kernel.tgz
+log "Extracting 'kernel.tgz'..."
+kernel_dir="$CACHE_DIR/kernel"
+kernel_path="${baseXX_dir}/usr/share/relink/kernel.tgz"
+if ! [ -d "$kernel_dir" ]; then
+	mkdir -p "$kernel_dir"
+	mv "$kernel_path" "$kernel_dir"
+	cd "$kernel_dir"
+	tar -zxf kernel.tgz
+	rm kernel.tgz
+else
+	warnlog "The directory '$kernel_dir' already exists, skipping..."
+fi
+
+# Copy base to work directory
+new_baseXX_dir="$WORK_DIR/base"
+log "Copying '$baseXX_dir' to '$new_baseXX_dir'..."
+cp -r "$baseXX_dir" "$new_baseXX_dir"
+baseXX_dir="$new_baseXX_dir"
+cd "$fileset_dir"
+
+# Copy kernel to work directory
+new_kernel_dir="$WORK_DIR/kernel"
+new_kernel_path="${baseXX_dir}/usr/share/relink/kernel.tgz"
+log "Copying '$kernel_dir' to '$new_kernel_dir'..."
+cp -r "$kernel_dir" "$new_kernel_dir"
+kernel_dir="$new_kernel_dir"
+kernel_path="$new_kernel_path"
+cd "$fileset_dir"
+
 # Patch kernel name
-fileset_dir="$iso_files_dir/$OPENBSD_VERSION/$OPENBSD_ARCH"
 log "Patching kernel name..."
 if ! [ -z "$KERNEL_NAME" ]; then
 	# TODO: Improve string matches to avoid kernel issues
@@ -124,25 +183,6 @@ if ! [ -z "$KERNEL_NAME" ]; then
 	log "Extracting 'bsd.rd'..."
 	mv bsd.rd bsd.rd.gz
 	gunzip bsd.rd.gz
-
-	# Extract baseXX.tgz
-	baseXX="base${openbsd_shortver}.tgz"
-	log "Extracting '${baseXX}'..."
-	baseXX_dir="$(mktemp -d)"
-	mv "$fileset_dir/$baseXX" "$baseXX_dir"
-	cd "$baseXX_dir"
-	tar -zxf "$baseXX" > /dev/null
-	rm "$baseXX"
-	cd "$fileset_dir"
-
-	# Extract kernel.tgz
-	log "Extracting 'kernel.tgz'..."
-	kernel_dir="$(mktemp -d)"
-	kernel_path="${baseXX_dir}/usr/share/relink/kernel.tgz"
-	mv "$kernel_path" "$kernel_dir"
-	cd "$kernel_dir"
-	tar -zxf "kernel.tgz"
-	rm kernel.tgz
 
 	# Patch kernel strings
 	cd "$fileset_dir"
@@ -184,21 +224,6 @@ if ! [ -z "$KERNEL_NAME" ]; then
 	gzip bsd.rd
 	mv bsd.rd.gz bsd.rd
 
-	# Archive kernel.tgz
-	log "Archiving 'kernel.tgz'..."
-	cd "$kernel_dir"
-	tar -czf "$kernel_path" *
-	cd "$baseXX_dir"
-	rm -rf "$kernel_dir"
-
-	# Archive baseXX.tgz
-	log "Archiving '${baseXX}'..."
-	cd "$baseXX_dir"
-	tar -czf "${baseXX}" *
-	mv "${baseXX}" "$fileset_dir"
-	cd "$fileset_dir"
-	rm -r "$baseXX_dir"
-
 	# Clean up
 	rm "$offsets_file"
 	log "Finished patches"
@@ -206,12 +231,36 @@ else
 	warnlog "Kernel name is not set, skipping patch..."
 fi
 
+# Install packages
+log "Installing packages to '$baseXX_dir'..."
+cd "$BASE_DIR"
+mkdir -p "$baseXX_dir/var/db/pkg"
+readline_callback "$BASE_DIR/packages" "push_package"
+log "Packages: $packages"
+install_packages "$baseXX_dir"
+log "Packages installed"
+
+# Archive kernel.tgz
+log "Archiving 'kernel.tgz'..."
+cd "$kernel_dir"
+tar -czf "$kernel_path" *
+cd "$baseXX_dir"
+rm -rf "$kernel_dir"
+
+# Archive baseXX.tgz
+log "Archiving '${baseXX}'..."
+cd "$baseXX_dir"
+tar -czf "${baseXX}" *
+mv "${baseXX}" "$fileset_dir"
+cd "$fileset_dir"
+rm -r "$baseXX_dir"
+
 # Create siteXX.tgz
 site_file="site${openbsd_shortver}.tgz"
 log "Creating '$site_file'..."
 site_dir="$BASE_DIR/site"
 cd "$site_dir"
-tar -zcf "$fileset_dir/$site_file" *
+tar -zchf "$fileset_dir/$site_file" *
 
 # Regenerate SHA256 checksums
 log "Regenerating the SHA256 checksums..."
