@@ -206,6 +206,13 @@ else
 	warnlog "Kernel name is not set, skipping patch..."
 fi
 
+# Create siteXX.tgz
+site_file="site${openbsd_shortver}.tgz"
+log "Creating '$site_file'..."
+site_dir="$BASE_DIR/site"
+cd "$site_dir"
+tar -zcf "$fileset_dir/$site_file" *
+
 # Regenerate SHA256 checksums
 log "Regenerating the SHA256 checksums..."
 cd "$fileset_dir"
