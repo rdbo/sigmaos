@@ -18,10 +18,10 @@ readline_callback() {
 	done < "$1"
 }
 
-bin_patch() {
+dd_patch() {
 	out="$1"
 	offset="$2"
-	data="$3"	
+	data="$3"
 
 	tmp="$(mktemp)"
 	printf "%s" "$data" > "$tmp"
@@ -29,10 +29,11 @@ bin_patch() {
 	rm "$tmp"
 }
 
-kernel_patch() {
-	offset="$(echo "$2" | cut -d " " -f 1)"
-	data="$(echo "$2" | cut -d " " -f 2- | sed "s/OpenBSD/$KERNEL_NAME/g")"
-	bin_patch "$1" "$offset" "$data"
+bin_patch() {
+	line="$(echo "$2" | sed 's/^ *//g')"
+	offset="$(echo "$line" | cut -d " " -f 1)"
+	data="$(echo "$line" | cut -d " " -f 2- | sed "s/OpenBSD/$KERNEL_NAME/g")"
+	dd_patch "$1" "$offset" "$data"
 }
 
 # Check if user is running on OpenBSD
@@ -117,15 +118,42 @@ if ! [ -z "$KERNEL_NAME" ]; then
 	# TODO: Improve string matches to avoid kernel issues
 	cd "$fileset_dir"
 	offsets_file="$(mktemp)"
-	for kernel in bsd bsd.rd bsd.mp; do
-		if ! [ -f "$kernel" ]; then
+
+	# Extract ramdisk
+	mv bsd.rd bsd.rd.gz
+	gunzip bsd.rd.gz
+
+	# Patch kernel strings
+	for bin in bsd bsd.mp bsd.rd cdboot; do
+		if ! [ -f "$bin" ]; then
 			continue
 		fi
 
-		log "Patching: $kernel"
-		strings -t d "$kernel" | grep OpenBSD | tail -3 > "$offsets_file"
-		readline_callback "$offsets_file" "kernel_patch $kernel"
+		log "Patching: $bin"
+		if [ "$bin" = "bsd" ] || [ "$bin" = "bsd.mp" ]; then
+			[ "$bin" = "bsd" ] && tail_count="4" || tail_count="3"
+			strings -t d "$bin" | grep OpenBSD | tail -n "$tail_count" > "$offsets_file"
+		elif [ "$bin" = "bsd.rd" ]; then
+			_temp=$(mktemp)
+			strings -t d "$bin" | grep OpenBSD > "$_temp"
+			grep 'Copyright (c)' "$_temp" > "$offsets_file"
+			grep 'export OBSD=' "$_temp" >> "$offsets_file"
+			grep "OpenBSD $OPENBSD_VERSION" "$_temp" >> "$offsets_file"
+			grep 'CONGRATULATIONS' "$_temp" >> "$offsets_file"
+			grep 'dmesg' "$_temp" >> "$offsets_file"
+			rm "$_temp"
+			unset _temp
+		elif [ "$bin" = "cdboot" ]; then
+			strings -t d "$bin" | grep OpenBSD | head -n 1 > "$offsets_file"
+		fi
+
+		readline_callback "$offsets_file" "bin_patch $bin"
 	done
+	# Archive ramdisk
+	gzip bsd.rd
+	mv bsd.rd.gz bsd.rd
+
+	# Clean up
 	rm "$offsets_file"
 	log "Finished patches"
 else
