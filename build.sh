@@ -70,15 +70,16 @@ fi
 mkdir -p "$WORK_DIR" "$CACHE_DIR" "$OUT_DIR"
 
 # Fetch OpenBSD ISO
-log "Fetching OpenBSD install ISO..."
 openbsd_iso="$CACHE_DIR/openbsd.iso"
-download_url="$OPENBSD_MIRROR/$OPENBSD_VERSION/$OPENBSD_ARCH/install$(echo "$OPENBSD_VERSION" | sed 's/\.//g').iso"
+openbsd_shortver="$(echo "$OPENBSD_VERSION" | sed 's/\.//g')"
+download_url="$OPENBSD_MIRROR/$OPENBSD_VERSION/$OPENBSD_ARCH/install${openbsd_shortver}.iso"
+log "Fetching OpenBSD install ISO from: '$download_url'..."
 
 if [ -f "$openbsd_iso" ]; then
 	warnlog "OpenBSD ISO already downloaded, skipping..."
 else
 	if ! ftp -o "$openbsd_iso" "$download_url" 2> /dev/null; then
-	    errlog "Unable to fetch OpenBSD from: $download_url"
+	    errlog "Unable to fetch OpenBSD"
 	    exit 1
 	fi
 	log "OpenBSD ISO fetched"
@@ -120,20 +121,34 @@ if ! [ -z "$KERNEL_NAME" ]; then
 	offsets_file="$(mktemp)"
 
 	# Extract ramdisk
+	log "Extracting 'bsd.rd'..."
 	mv bsd.rd bsd.rd.gz
 	gunzip bsd.rd.gz
 
+	# Extract baseXX.tgz
+	log "Extracting '${baseXX}'..."
+	baseXX="base${openbsd_shortver}.tgz"
+	baseXX_dir="$(mktemp -d)"
+	mv "$fileset_dir/$baseXX" "$baseXX_dir"
+	cd "$baseXX_dir"
+	tar -zxf "$baseXX" > /dev/null
+	rm "$baseXX"
+	cd "$fileset_dir"
+
 	# Patch kernel strings
-	for bin in bsd bsd.mp bsd.rd cdboot; do
+	baseXX_mdec="$baseXX_dir/usr/mdec"
+	for bin in bsd bsd.mp bsd.rd cdboot "$baseXX_mdec/biosboot" "$baseXX_mdec/boot" "$baseXX_mdec/BOOTIA32.EFI" "$baseXX_mdec/BOOTX64.EFI" "$baseXX_mdec/cdboot" "$baseXX_mdec/fdboot" "$baseXX_mdec/pxeboot"; do
 		if ! [ -f "$bin" ]; then
 			continue
 		fi
 
-		log "Patching: $bin"
-		if [ "$bin" = "bsd" ] || [ "$bin" = "bsd.mp" ]; then
+		log "Patching '$bin'..."
+		case "$bin" in
+		bsd|bsd.mp)
 			[ "$bin" = "bsd" ] && tail_count="4" || tail_count="3"
 			strings -t d "$bin" | grep OpenBSD | tail -n "$tail_count" > "$offsets_file"
-		elif [ "$bin" = "bsd.rd" ]; then
+			;;
+		bsd.rd)
 			_temp=$(mktemp)
 			strings -t d "$bin" | grep OpenBSD > "$_temp"
 			grep 'Copyright (c)' "$_temp" > "$offsets_file"
@@ -143,15 +158,26 @@ if ! [ -z "$KERNEL_NAME" ]; then
 			grep 'dmesg' "$_temp" >> "$offsets_file"
 			rm "$_temp"
 			unset _temp
-		elif [ "$bin" = "cdboot" ]; then
+			;;
+		cdboot|"$baseXX_mdec"*)
 			strings -t d "$bin" | grep OpenBSD | head -n 1 > "$offsets_file"
-		fi
+			;;
+		esac
 
 		readline_callback "$offsets_file" "bin_patch $bin"
 	done
 	# Archive ramdisk
+	log "Archiving 'bsd.rd'..."
 	gzip bsd.rd
 	mv bsd.rd.gz bsd.rd
+
+	log "Archiving '${baseXX}.tgz'..."
+	# Archive baseXX.tgz
+	cd "$baseXX_dir"
+	tar -czf "${baseXX}" *
+	mv "${baseXX}" "$fileset_dir"
+	cd "$fileset_dir"
+	rm -r "$baseXX_dir"
 
 	# Clean up
 	rm "$offsets_file"
