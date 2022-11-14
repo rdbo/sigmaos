@@ -126,8 +126,8 @@ if ! [ -z "$KERNEL_NAME" ]; then
 	gunzip bsd.rd.gz
 
 	# Extract baseXX.tgz
-	log "Extracting '${baseXX}'..."
 	baseXX="base${openbsd_shortver}.tgz"
+	log "Extracting '${baseXX}'..."
 	baseXX_dir="$(mktemp -d)"
 	mv "$fileset_dir/$baseXX" "$baseXX_dir"
 	cd "$baseXX_dir"
@@ -135,9 +135,19 @@ if ! [ -z "$KERNEL_NAME" ]; then
 	rm "$baseXX"
 	cd "$fileset_dir"
 
+	# Extract kernel.tgz
+	log "Extracting 'kernel.tgz'..."
+	kernel_dir="$(mktemp -d)"
+	kernel_path="${baseXX_dir}/usr/share/relink/kernel.tgz"
+	mv "$kernel_path" "$kernel_dir"
+	cd "$kernel_dir"
+	tar -zxf "kernel.tgz"
+	rm kernel.tgz
+
 	# Patch kernel strings
+	cd "$fileset_dir"
 	baseXX_mdec="$baseXX_dir/usr/mdec"
-	for bin in bsd bsd.mp bsd.rd cdboot "$baseXX_mdec/biosboot" "$baseXX_mdec/boot" "$baseXX_mdec/BOOTIA32.EFI" "$baseXX_mdec/BOOTX64.EFI" "$baseXX_mdec/cdboot" "$baseXX_mdec/fdboot" "$baseXX_mdec/pxeboot"; do
+	for bin in bsd bsd.mp bsd.rd cdboot "$baseXX_mdec/biosboot" "$baseXX_mdec/boot" "$baseXX_mdec/BOOTIA32.EFI" "$baseXX_mdec/BOOTX64.EFI" "$baseXX_mdec/cdboot" "$baseXX_mdec/fdboot" "$baseXX_mdec/pxeboot" "$kernel_dir/GENERIC/vers.o" "$kernel_dir/GENERIC.MP/vers.o"; do
 		if ! [ -f "$bin" ]; then
 			continue
 		fi
@@ -159,6 +169,9 @@ if ! [ -z "$KERNEL_NAME" ]; then
 			rm "$_temp"
 			unset _temp
 			;;
+		*/vers.o)
+			strings -t d "$bin" | grep OpenBSD | head -n 3 > "$offsets_file"
+			;;
 		cdboot|"$baseXX_mdec"*)
 			strings -t d "$bin" | grep OpenBSD | head -n 1 > "$offsets_file"
 			;;
@@ -171,8 +184,15 @@ if ! [ -z "$KERNEL_NAME" ]; then
 	gzip bsd.rd
 	mv bsd.rd.gz bsd.rd
 
-	log "Archiving '${baseXX}.tgz'..."
+	# Archive kernel.tgz
+	log "Archiving 'kernel.tgz'..."
+	cd "$kernel_dir"
+	tar -czf "$kernel_path" *
+	cd "$baseXX_dir"
+	rm -rf "$kernel_dir"
+
 	# Archive baseXX.tgz
+	log "Archiving '${baseXX}'..."
 	cd "$baseXX_dir"
 	tar -czf "${baseXX}" *
 	mv "${baseXX}" "$fileset_dir"
