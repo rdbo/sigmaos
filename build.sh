@@ -12,6 +12,11 @@ errlog() {
 	log "[ERROR] $@"
 }
 
+get_vndev() {
+	vndev="$(vnconfig -l | grep "not in use" | head -1 | cut -d ":" -f 1)"
+	echo "$vndev"
+}
+
 readline_callback() {
 	while IFS="" read -r line; do
 		$2 "$line"
@@ -103,7 +108,7 @@ iso_files_dir="$WORK_DIR/cd-dir"
 # Mount ISO on temporary directory
 iso_mount="$WORK_DIR/mntiso"
 mkdir -p "$iso_mount"
-vndev="$(vnconfig -l | grep "not in use" | head -1 | cut -d ":" -f 1)"
+vndev="$(get_vndev)"
 if [ -z "$vndev" ]; then
 	errlog "Uname to find available vndev for mounting the ISO"
 	exit 1
@@ -173,7 +178,7 @@ kernel_path="$new_kernel_path"
 cd "$fileset_dir"
 
 # Patch kernel name
-log "Patching kernel name..."
+log "Patching kernel..."
 if ! [ -z "$KERNEL_NAME" ]; then
 	# TODO: Improve string matches to avoid kernel issues
 	cd "$fileset_dir"
@@ -230,6 +235,38 @@ if ! [ -z "$KERNEL_NAME" ]; then
 else
 	warnlog "Kernel name is not set, skipping patch..."
 fi
+
+# Add 'siteXX.tgz' set to default sets of 'bsd.rd'
+# TODO: Merge this step with kernel patching to avoid
+# extracting and archiving 'bsd.rd' twice
+log "Adding 'site${openbsd_shortver}.tgz' to default sets..."
+diskfs_dir="$WORK_DIR/diskfs"
+mkdir -p "$diskfs_dir"
+cd "$fileset_dir"
+
+vndev="$(get_vndev)"
+if [ -z "$vndev" ]; then
+	errlog "Unable to find available vndev"
+	exit 1
+fi
+
+mv bsd.rd bsd.rd.gz
+gunzip bsd.rd.gz
+
+rdsetroot -x bsd.rd disk.fs
+vnconfig "$vndev" disk.fs
+mount "/dev/${vndev}a" "$diskfs_dir"
+
+cd "$diskfs_dir"
+sed -i -E 's/^(SETS=.*)(}.*)/\1,site\2/g' install.sub
+
+cd "$fileset_dir"
+umount "/dev/${vndev}a"
+rdsetroot bsd.rd disk.fs
+gzip bsd.rd
+mv bsd.rd.gz bsd.rd
+vnconfig -u "$vndev"
+rm -r "$diskfs_dir" disk.fs
 
 # Install packages
 log "Installing packages to '$baseXX_dir'..."
